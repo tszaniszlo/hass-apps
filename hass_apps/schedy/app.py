@@ -194,7 +194,11 @@ class SchedyApp(common.App):
 
         for stats_param in self.stats_params:
             stats_param.initialize()
-
+        
+        # ÚJ: Preheating indítása minden szobában
+        for room in self.rooms:
+            if hasattr(room, 'start_preheating_checks'):
+                room.start_preheating_checks()    
     def watch_entity(
         self, definition: T.Dict[str, T.Any], rooms: T.List["Room"]
     ) -> None:

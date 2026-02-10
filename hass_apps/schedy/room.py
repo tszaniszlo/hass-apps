@@ -87,6 +87,17 @@ class Room:
 
         self._reevaluation_timer = None  # type: T.Optional[uuid.UUID]
 
+        # Preheating configuration
+        self.preheat_enabled = cfg.get("preheat_enabled", False)
+        self.preheat_threshold_temp = cfg.get("preheat_threshold_temp", 0.2)
+        self.preheat_minutes = cfg.get("preheat_minutes", 30)
+        self._preheat_timer = None
+        
+        if self.preheat_enabled:
+            self.log("Preheating enabled: threshold={}°C, lead_time={}min"
+                     .format(self.preheat_threshold_temp, self.preheat_minutes),
+                     level="DEBUG")
+
     def __repr__(self) -> str:
         return "<Room {}>".format(str(self))
 
@@ -735,3 +746,110 @@ class Room:
                 level="DEBUG",
             )
             self._reevaluation_timer = self.app.run_in(_reevaluation_cb, 1)
+
+
+
+def start_preheating_checks(self) -> None:
+        """Elindítja az előfűtés ellenőrzését"""
+        if not self.preheat_enabled:
+            return
+        
+        if self._preheat_timer:
+            self._preheat_timer.cancel()
+        
+        # 5 percenként ellenőriz
+        self._preheat_timer = self.app.run_every(
+            self._check_preheating,
+            self.app.datetime() + datetime.timedelta(seconds=30),
+            5 * 60
+        )
+
+    def _check_preheating(self, kwargs: dict) -> None:
+        """Előfűtés szükségességének ellenőrzése"""
+        if not self.preheat_enabled:
+            return
+        
+        # Jelenlegi hőmérséklet lekérése
+        current_temp = self._get_current_temp()
+        if current_temp is None:
+            return
+        
+        # Következő scheduled érték kiszámítása
+        next_schedule_info = self._get_next_schedule_change()
+        if not next_schedule_info:
+            return
+        
+        next_value = next_schedule_info["value"]
+        minutes_until = next_schedule_info["minutes_until"]
+        
+        # Ha a következő érték nem szám (pl. "OFF"), kihagyjuk
+        if not isinstance(next_value, (int, float)):
+            return
+        
+        temp_diff = next_value - current_temp
+        
+        # Ellenőrzés: közel az időablak ÉS hőmérséklet alatt van
+        if (minutes_until <= self.preheat_minutes and 
+            temp_diff >= self.preheat_threshold_temp):
+            
+            self.log(
+                "Preheating triggered: target={}°C, current={}°C, "
+                "diff={:.2f}°C, time_until={}min"
+                .format(next_value, current_temp, temp_diff, minutes_until),
+                level="INFO"
+            )
+            
+            # Manuálisan beállítjuk a target hőmérsékletet
+            self.set_value_manually(next_value, force_resend=True)
+
+    def _get_current_temp(self) -> float:
+        """Jelenlegi szobahőmérséklet lekérése"""
+        # Ha van temperature sensor beállítva
+        temp_cfg = self.cfg.get("thermometer")
+        if not temp_cfg:
+            # Fallback: climate entity current_temperature attribútuma
+            for actor in self.actors:
+                if hasattr(actor, 'entity_id') and actor.entity_id.startswith('climate.'):
+                    state = self.app.get_state(actor.entity_id, attribute="current_temperature")
+                    if state:
+                        return float(state)
+            return None
+        
+        # Ha string, akkor entity_id
+        if isinstance(temp_cfg, str):
+            state = self.app.get_state(temp_cfg)
+        else:
+            # Ha dict, akkor bonyolultabb konfig lehet
+            state = self.app.get_state(temp_cfg.get("entity_id"))
+        
+        try:
+            return float(state)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_next_schedule_change(self) -> dict:
+        """Következő schedule változás időpontjának és értékének meghatározása"""
+        now = self.app.datetime()
+        schedule = self.cfg.get("schedule", [])
+        
+        if not schedule:
+            return None
+        
+        # A következő 24 órát végigskenneljük percenként
+        for minutes_ahead in range(1, 24 * 60):
+            check_time = now + datetime.timedelta(minutes=minutes_ahead)
+            
+            # Schedy schedule_eval használata az adott időpontra
+            result = self.eval_schedule(schedule, when=check_time)
+            
+            # Ha más érték jön ki mint a mostani scheduled érték
+            current_result = self.eval_schedule(schedule, when=now)
+            
+            if result != current_result:
+                return {
+                    "value": result,
+                    "minutes_until": minutes_ahead,
+                    "time": check_time
+                }
+        
+        return None            
