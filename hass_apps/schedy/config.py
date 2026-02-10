@@ -9,6 +9,13 @@ import traceback
 
 import voluptuous as vol
 
+# DEBUG: Preheating feature loaded from GitHub fork!
+import logging
+_logger = logging.getLogger(__name__)
+_logger.warning("=" * 80)
+_logger.warning("PREHEATING FEATURE LOADED - GitHub fork by tszaniszlo")
+_logger.warning("=" * 80)
+
 from . import actor, schedule, util
 from .room import Room
 
