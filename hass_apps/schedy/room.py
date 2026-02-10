@@ -724,7 +724,7 @@ class Room:
             and self._scheduled_value == self._wanted_value
         )
 
-def trigger_reevaluation(self, reset: bool = False) -> None:
+    def trigger_reevaluation(self, reset: bool = False) -> None:
         """Initializes a schedule re-evaluation in 1 second.
         The reset parameter is passed through to apply_schedule()."""
 
