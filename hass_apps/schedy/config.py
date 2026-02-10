@@ -319,6 +319,14 @@ ROOM_SCHEMA = vol.Schema(
             vol.Optional("schedule", default=list): vol.All(
                 SCHEDULE_SCHEMA, validate_rule_paths
             ),
+            # Preheating configuration
+            vol.Optional("preheat_enabled", default=False): bool,
+            vol.Optional("preheat_threshold_temp", default=0.2): vol.All(
+                vol.Any(float, int), vol.Range(min=0.0, max=10.0)
+            ),
+            vol.Optional("preheat_minutes", default=30): vol.All(
+                int, vol.Range(min=1, max=180)
+            ),
         },
     )
 )
