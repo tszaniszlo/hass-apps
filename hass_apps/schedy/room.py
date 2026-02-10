@@ -724,7 +724,7 @@ class Room:
             and self._scheduled_value == self._wanted_value
         )
 
-    def trigger_reevaluation(self, reset: bool = False) -> None:
+def trigger_reevaluation(self, reset: bool = False) -> None:
         """Initializes a schedule re-evaluation in 1 second.
         The reset parameter is passed through to apply_schedule()."""
 
@@ -747,9 +747,7 @@ class Room:
             )
             self._reevaluation_timer = self.app.run_in(_reevaluation_cb, 1)
 
-
-
-def start_preheating_checks(self) -> None:
+    def start_preheating_checks(self) -> None:
         """Elindítja az előfűtés ellenőrzését"""
         if not self.preheat_enabled:
             return
@@ -808,7 +806,7 @@ def start_preheating_checks(self) -> None:
         temp_cfg = self.cfg.get("thermometer")
         if not temp_cfg:
             # Fallback: climate entity current_temperature attribútuma
-            for actor in self.actors:
+            for actor in self.actors.values():
                 if hasattr(actor, 'entity_id') and actor.entity_id.startswith('climate.'):
                     state = self.app.get_state(actor.entity_id, attribute="current_temperature")
                     if state:
@@ -830,26 +828,28 @@ def start_preheating_checks(self) -> None:
     def _get_next_schedule_change(self) -> dict:
         """Következő schedule változás időpontjának és értékének meghatározása"""
         now = self.app.datetime()
-        schedule = self.cfg.get("schedule", [])
         
-        if not schedule:
+        if not self.schedule:
             return None
         
         # A következő 24 órát végigskenneljük percenként
         for minutes_ahead in range(1, 24 * 60):
             check_time = now + datetime.timedelta(minutes=minutes_ahead)
             
-            # Schedy schedule_eval használata az adott időpontra
-            result = self.eval_schedule(schedule, when=check_time)
+            # Schedy schedule evaluate használata
+            result = self.schedule.evaluate(self, check_time)
+            current_result = self.schedule.evaluate(self, now)
             
-            # Ha más érték jön ki mint a mostani scheduled érték
-            current_result = self.eval_schedule(schedule, when=now)
-            
-            if result != current_result:
-                return {
-                    "value": result,
-                    "minutes_until": minutes_ahead,
-                    "time": check_time
-                }
+            # Ha van eredmény és különbözik a jelenlegitől
+            if result and current_result:
+                next_value = result[0]
+                current_value = current_result[0]
+                
+                if next_value != current_value:
+                    return {
+                        "value": next_value,
+                        "minutes_until": minutes_ahead,
+                        "time": check_time
+                    }
         
-        return None            
+        return None
