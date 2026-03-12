@@ -91,8 +91,8 @@ class Room:
         self.preheat_enabled = cfg.get("preheat_enabled", False)
         self.preheat_threshold_temp = cfg.get("preheat_threshold_temp", 0.2)
         self.preheat_minutes = cfg.get("preheat_minutes", 30)
-        self._preheat_timer = None
-        
+        self._preheat_timer = None  # type: T.Optional[uuid.UUID]
+
         if self.preheat_enabled:
             self.log("Preheating enabled: threshold={}°C, lead_time={}min"
                      .format(self.preheat_threshold_temp, self.preheat_minutes),
@@ -483,6 +483,10 @@ class Room:
         for definition in self.cfg["watched_entities"]:
             self.app.watch_entity(definition, [self])
 
+        # FIX: preheating timer indítása az initialize végén
+        if self.preheat_enabled:
+            self.start_preheating_checks()
+
     def log(self, msg: str, *args: T.Any, **kwargs: T.Any) -> None:
         """Prefixes the room to log messages."""
 
@@ -617,8 +621,8 @@ class Room:
         """Evaluates the given expression or value and sets the result.
         An existing re-scheduling timer is cancelled and a new one is
         started if re-scheduling timers are configured.
-        rescheduling_delay, if given, overwrites the value configured
-        for the room. Passing 0 disables re-scheduling."""
+        rescheduling_delay, if given, overwrites the rescheduling_delay
+        configured for the room. Passing 0 disables re-scheduling."""
 
         _checks = expr_raw is None, value is None
         if all(_checks) or not any(_checks):
@@ -747,109 +751,129 @@ class Room:
             )
             self._reevaluation_timer = self.app.run_in(_reevaluation_cb, 1)
 
+    def cancel_preheating_timer(self) -> bool:
+        """Cancels the preheating timer for this room, if one exists.
+        FIX: Use app.cancel_timer() instead of calling .cancel() on the UUID handle.
+        Returns whether a timer has been cancelled."""
+
+        with self._timer_lock:
+            timer = self._preheat_timer
+            if timer is None:
+                return False
+            self.app.cancel_timer(timer)
+            self._preheat_timer = None
+
+        self.log("Cancelled preheating timer.", level="DEBUG")
+        return True
+
     def start_preheating_checks(self) -> None:
-        """Elindítja az előfűtés ellenőrzését"""
+        """Elindítja az előfűtés ellenőrzését.
+        FIX: cancel_preheating_timer() gondoskodik a régi timer törléséről,
+        így nem halmozódnak fel a callbackek."""
+
         if not self.preheat_enabled:
             return
-        
-        if self._preheat_timer:
-            self._preheat_timer.cancel()
-        
-        # 5 percenként ellenőriz
-        self._preheat_timer = self.app.run_every(
-            self._check_preheating,
-            self.app.datetime() + datetime.timedelta(seconds=30),
-            5 * 60
-        )
+
+        # FIX: app.cancel_timer() hívása a régi UUID handle-n, nem .cancel()
+        self.cancel_preheating_timer()
+
+        with self._timer_lock:
+            self._preheat_timer = self.app.run_every(
+                self._check_preheating,
+                self.app.datetime() + datetime.timedelta(seconds=30),
+                5 * 60
+            )
+
+        self.log("Preheating check timer started (every 5 min).", level="DEBUG")
 
     def _check_preheating(self, kwargs: dict) -> None:
-        """Előfűtés szükségességének ellenőrzése"""
+        """Előfűtés szükségességének ellenőrzése.
+        FIX: set_value_manually() keyword argumentummal hívva."""
+
         if not self.preheat_enabled:
             return
-        
-        # Jelenlegi hőmérséklet lekérése
+
         current_temp = self._get_current_temp()
         if current_temp is None:
             return
-        
-        # Következő scheduled érték kiszámítása
+
         next_schedule_info = self._get_next_schedule_change()
         if not next_schedule_info:
             return
-        
+
         next_value = next_schedule_info["value"]
         minutes_until = next_schedule_info["minutes_until"]
-        
-        # Ha a következő érték nem szám (pl. "OFF"), kihagyjuk
+
         if not isinstance(next_value, (int, float)):
             return
-        
+
         temp_diff = next_value - current_temp
-        
-        # Ellenőrzés: közel az időablak ÉS hőmérséklet alatt van
-        if (minutes_until <= self.preheat_minutes and 
-            temp_diff >= self.preheat_threshold_temp):
-            
+
+        if (minutes_until <= self.preheat_minutes and
+                temp_diff >= self.preheat_threshold_temp):
+
             self.log(
                 "Preheating triggered: target={}°C, current={}°C, "
                 "diff={:.2f}°C, time_until={}min"
                 .format(next_value, current_temp, temp_diff, minutes_until),
                 level="INFO"
             )
-            
-            # Manuálisan beállítjuk a target hőmérsékletet
-            self.set_value_manually(next_value, force_resend=True)
 
-    def _get_current_temp(self) -> float:
-        """Jelenlegi szobahőmérséklet lekérése"""
-        # Ha van temperature sensor beállítva
+            # FIX: keyword argument használata (value=), nem positional
+            self.set_value_manually(value=next_value, force_resend=True)
+
+    def _get_current_temp(self) -> T.Optional[float]:
+        """Jelenlegi szobahőmérséklet lekérése."""
+
         temp_cfg = self.cfg.get("thermometer")
         if not temp_cfg:
-            # Fallback: climate entity current_temperature attribútuma
             for actor in self.actors.values():
                 if hasattr(actor, 'entity_id') and actor.entity_id.startswith('climate.'):
                     state = self.app.get_state(actor.entity_id, attribute="current_temperature")
-                    if state:
-                        return float(state)
+                    if state is not None:
+                        try:
+                            return float(state)
+                        except (TypeError, ValueError):
+                            pass
             return None
-        
-        # Ha string, akkor entity_id
+
         if isinstance(temp_cfg, str):
             state = self.app.get_state(temp_cfg)
         else:
-            # Ha dict, akkor bonyolultabb konfig lehet
             state = self.app.get_state(temp_cfg.get("entity_id"))
-        
+
         try:
             return float(state)
         except (TypeError, ValueError):
             return None
 
-    def _get_next_schedule_change(self) -> dict:
-        """Következő schedule változás időpontjának és értékének meghatározása"""
+    def _get_next_schedule_change(self) -> T.Optional[dict]:
+        """Következő schedule változás időpontjának és értékének meghatározása.
+        FIX: current_result csak egyszer számítódik ki (nem 1440x),
+        és csak preheat_minutes + 5 perc előre tekintünk, nem 24 óra."""
+
         now = self.app.datetime()
-        
+
         if not self.schedule:
             return None
-        
-        # A következő 24 órát végigskenneljük percenként
-        for minutes_ahead in range(1, 24 * 60):
+
+        # FIX: current_result egyszer számítjuk ki a cikluson kívül
+        current_result = self.schedule.evaluate(self, now)
+        if not current_result:
+            return None
+        current_value = current_result[0]
+
+        # FIX: csak preheat_minutes + 5 perc előre nézünk, nem 24*60 percet
+        lookahead_minutes = self.preheat_minutes + 5
+        for minutes_ahead in range(1, lookahead_minutes + 1):
             check_time = now + datetime.timedelta(minutes=minutes_ahead)
-            
-            # Schedy schedule evaluate használata
             result = self.schedule.evaluate(self, check_time)
-            current_result = self.schedule.evaluate(self, now)
-            
-            # Ha van eredmény és különbözik a jelenlegitől
-            if result and current_result:
-                next_value = result[0]
-                current_value = current_result[0]
-                
-                if next_value != current_value:
-                    return {
-                        "value": next_value,
-                        "minutes_until": minutes_ahead,
-                        "time": check_time
-                    }
-        
+
+            if result and result[0] != current_value:
+                return {
+                    "value": result[0],
+                    "minutes_until": minutes_ahead,
+                    "time": check_time
+                }
+
         return None
