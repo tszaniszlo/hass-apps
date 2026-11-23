@@ -825,27 +825,27 @@ class Room:
     def _get_current_temp(self) -> T.Optional[float]:
         """Jelenlegi szobahőmérséklet lekérése."""
 
+        # Elsősorban a szobahőmérő; ha nincs megadva vagy nem elérhető, a fej saját hőmérséklete.
         temp_cfg = self.cfg.get("thermometer")
-        if not temp_cfg:
-            for actor in self.actors.values():
-                if hasattr(actor, 'entity_id') and actor.entity_id.startswith('climate.'):
-                    state = self.app.get_state(actor.entity_id, attribute="current_temperature")
-                    if state is not None:
-                        try:
-                            return float(state)
-                        except (TypeError, ValueError):
-                            pass
-            return None
+        if temp_cfg:
+            if isinstance(temp_cfg, str):
+                state = self.app.get_state(temp_cfg)
+            else:
+                state = self.app.get_state(temp_cfg.get("entity_id"))
+            try:
+                return float(state)
+            except (TypeError, ValueError):
+                pass
 
-        if isinstance(temp_cfg, str):
-            state = self.app.get_state(temp_cfg)
-        else:
-            state = self.app.get_state(temp_cfg.get("entity_id"))
-
-        try:
-            return float(state)
-        except (TypeError, ValueError):
-            return None
+        for actor in self.actors.values():
+            if hasattr(actor, 'entity_id') and actor.entity_id.startswith('climate.'):
+                state = self.app.get_state(actor.entity_id, attribute="current_temperature")
+                if state is not None:
+                    try:
+                        return float(state)
+                    except (TypeError, ValueError):
+                        pass
+        return None
 
     def _get_next_schedule_change(self) -> T.Optional[dict]:
         """Következő schedule változás időpontjának és értékének meghatározása.

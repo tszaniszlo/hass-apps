@@ -334,6 +334,8 @@ ROOM_SCHEMA = vol.Schema(
             vol.Optional("preheat_minutes", default=30): vol.All(
                 int, vol.Range(min=1, max=180)
             ),
+            # Szobahőmérő az előfűtéshez; ha nem elérhető, a fej saját hőmérsékletét használja.
+            vol.Optional("thermometer"): str,
         },
     )
 )
